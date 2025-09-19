@@ -296,4 +296,25 @@ private String newDelayedNotify1(String sessionID) {
 		}
 
 		return "";
+
 	}
+
+sql="select WINAME,itemindex from assignment_ext_table where curr_wsname='Maker' and (docflag='' or docflag is null)";
+							sOutputXML=objDmsOper.selectFromDatabsequery(sql);
+							MyLogger.debug("sOutputXML "+sOutputXML );
+							parser.setInputXML(sOutputXML);
+							MainCode = Integer.parseInt(parser.getValueOf("MainCode"));
+							MyLogger.debug("MainCode::"+MainCode);
+							if(MainCode==0){
+								int noOfFields=parser.getNoOfFields("Record");
+								if(!(noOfFields==0)){
+								MyLogger.debug("noOfFields :: "+parser.getNoOfFields("Record"));
+								for (int j = 0; j < noOfFields; j++) {
+									//Iterating each Document under specific Document Index 
+									subparser = new XMLParser(parser.getNextValueOf("Record"));
+									wi_name=subparser.getValueOf("WINAME");
+									folderIndexIBPS=subparser.getValueOf("itemindex");
+								MyLogger.debug("wi_name::"+wi_name);
+								System.out.println("wi_name::"+wi_name);
+								MyLogger.debug("folderIndexIBPS::"+folderIndexIBPS);
+								System.out.println("folderIndexIBPS::"+folderIndexIBPS);
