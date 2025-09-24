@@ -2,3 +2,10 @@ SELECT ProcessInstanceID from WFINSTRUMENTTABLE w, RB_ML_EXTTABLE r,USR_0_ML_WIH
  r.REQUEST_FOR IN ('IPA - Credit', 'IPA - Express') and w.VAR_STR1 IN ('Credit', 'Initiator_Reject')
  and h.WORKSTEP = (Select top 1 workstep from USR_0_ML_WIHISTORY order by ENTRY_DATE_TIME desc) 
  and w.ProcessInstanceID=r.WINAME and w.ProcessInstanceID=h.WI_NAME
+
+xbsuhaib-rakbank
+xssiddiqu-rakbank
+xrukumar-rakbank
+xmaarora-rakbank
+xavagar-rakbank
+xkrharsh-rakbank
