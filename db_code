@@ -6,3 +6,12 @@
 #NotAuthrized#
 #CustFullfilment#
 #CustFullfillmentDate#
+It’s system functionality to send reminder/escalation mail for the cases which has not been initiated or verified for reconciliation. 
+These mails are being sent on day’s(configured as NotificationDates in SAR_EmailReminder_Config.properties) for each month.
+
+Each mail contains following data in mail body for the reporting team, account owner and department head combination:
+Workitems which are created for csv file received from BO/control-m and pending initiation or processing. Details for such workitems are available in this USR_0_SAR_ReconCSVWorkItem table.
+Accounts which are pushed in Recon table by BO but workitem are not yet created or processed for the respective account. Details for such accounts are available in this USR_0_SAR_iBPS_Recon_Accounts_Table table.
+
+Mail To will be addressed to department head whereas reporting team and account owner will be part of Mail CC as maintained in USR_0_SAR_ReconRepHierarchyParam.
+
