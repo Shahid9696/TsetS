@@ -1,83 +1,85 @@
-SET @QueryString = '
-SELECT 
-    b.wi_name AS "WorkItem Number",
-    b.Service_Request_Type AS "Service Request Type",
-    CHAR(39) + b.cif_id AS "CIF ID",
-    CHAR(39) + b.Agreement_Number AS "Agreement Number",
-    CHAR(39) + b.ERCN_Number AS "ECRN Number",
-    b.Pre_Paid_Pack_Id AS "Prepaid pack ID",
-    b.IntiatorUserGroup AS "Initiating Team",
-    b.IntoducedBy AS "Introduced By",
-    b.IntoducedAt AS "Introduced Date",
-    b.current_ws AS "Current Workstep",
-    CASE 
-        WHEN b.CURRENT_WS IN (''Exit'', ''Reject'') THEN ''NA'' 
-        ELSE b.Team 
-    END AS "Current Team Assigned",
-
-    -- OUTER APPLY to get top history row once
-    History.wsname AS "Last Actioned Workstep (Team)",
-    History.username AS "Last Actioned By (Team)",
-    History.decision AS "Last Decision (Team)",
-    AssignInfo.assigneddatetime AS "Last Entry Datetime (Team)",
-    History.actiondatetime AS "Last Action Datetime (Team)",
-    History.remarks AS "Last Remarks (Team)",
-    rakcas.dbo.[getRejectReasons_SRO](History.rejectreasons, ''SRO'') AS "Last Reject Reason",
-
-    CurrentStep.entrydatetime AS "Current Workstep Entrydatetime",
-    CASE 
-        WHEN b.current_ws NOT IN (''Exit'', ''Reject'') THEN rakcas.dbo.[GetTatCalculation_SRO](CurrentStep.entrydatetime, GETDATE())
-        ELSE ''NA''
-    END AS "Current Queue Ageing"
-
-FROM rakcas.dbo.RB_SRO_EXTTABLE b WITH (NOLOCK)
-
--- JOIN with filtered history once
-INNER JOIN (
-    SELECT DISTINCT winame
-    FROM rakcas.dbo.RAK_V_SRO_received_History WITH (NOLOCK)
-    WHERE 
-        teamassigned = ''' + @Team + '''
-        AND CONVERT(DATE, assigneddatetime, 102) BETWEEN CONVERT(DATE, ''' + @FromDate + ''', 102)
-        AND CONVERT(DATE, ''' + @ToDate + ''', 102)
-        AND identifier = ''Assigned''
-) AS FilteredHistory ON b.wi_name = FilteredHistory.winame
-
--- APPLY to get assignment info
-OUTER APPLY (
-    SELECT MAX(g.assigneddatetime) AS assigneddatetime
-    FROM rakcas.dbo.RAK_V_SRO_received_History g WITH (NOLOCK)
-    WHERE 
-        g.winame = b.wi_name
-        AND g.teamassigned = ''' + @Team + '''
-        AND g.identifier = ''Assigned''
-) AS AssignInfo
-
--- APPLY to get most recent action details
-OUTER APPLY (
-    SELECT TOP 1 
-        f.wsname,
-        f.username,
-        f.decision,
-        f.remarks,
-        f.rejectreasons,
-        f.actiondatetime
-    FROM rakcas.dbo.RAK_V_SRO_received_History f WITH (NOLOCK)
-    WHERE 
-        f.winame = b.wi_name
-        AND f.[Last Team Assigned] = ''' + @Team + '''
-        AND f.wsname IN (''checker'', ''Maker'')
-        AND f.actiondatetime > AssignInfo.assigneddatetime
-    ORDER BY f.actiondatetime DESC
-) AS History
-
--- APPLY to get current workstep entry datetime
-OUTER APPLY (
-    SELECT TOP 1 ENTRYDATETIME
-    FROM rakcas.dbo.USR_0_SRO_WIHISTORY WITH (NOLOCK)
-    WHERE 
-        WINAME = b.wi_name
-        AND ACTIONDATETIME IS NULL
-    ORDER BY ENTRYDATETIME DESC
-) AS CurrentStep
-'
+CREATE PROCEDURE [dbo].[RAK_SRO_Workitem_Received_Report] (
+	@FromDate VARCHAR(50)
+	,@ToDate VARCHAR(50)
+	,@Team VARCHAR(200)
+	,@daterangevalidiationrequired VARCHAR(10)
+	,@BatchingReq NVARCHAR(5)
+	,@BatchSize NVARCHAR(20)
+	,@OrderBy INT
+	,@SortField NVARCHAR(64)
+	,@SortFieldValue NVARCHAR(64)
+	,@SortOrder NVARCHAR(5)
+	,@KeyField NVARCHAR(64)
+)
+AS
+BEGIN
+	SET NOCOUNT ON;
+	DECLARE @FIRSTWIDATE DATE
+	DECLARE @CURRDATE DATE
+ 
+	CREATE TABLE #TMP (
+		"WorkItem Number" NVARCHAR(200), "Service Request Type" NVARCHAR(200), "CIF ID" NVARCHAR(200),
+		"Agreement Number" NVARCHAR(200), "ECRN Number" NVARCHAR(200), "Prepaid pack ID" NVARCHAR(200),
+		"Initiating Team" NVARCHAR(200), "Introduced By" NVARCHAR(200), "Introduced Date" DATETIME,
+		"Current Workstep" NVARCHAR(200), "Current Team Assigned" NVARCHAR(200),
+		"Last Actioned Workstep (Team)" NVARCHAR(200), "Last Actioned By (Team)" NVARCHAR(200),
+		"Last Decision (Team)" NVARCHAR(200), "Last Entry Datetime (Team)" DATETIME,
+		"Last Action Datetime (Team)" DATETIME, "Last Remarks (Team)" NVARCHAR(MAX),
+		"Last Reject Reason" NVARCHAR(MAX), "Current Workstep Entrydatetime" DATETIME,
+		"Current Queue Ageing" NVARCHAR(200)
+	)
+ 
+	IF @FromDate <> '' AND @ToDate <> ''
+	BEGIN
+		SET @FIRSTWIDATE = CONVERT(DATE, @FromDate, 102)
+		SET @CURRDATE = CONVERT(DATE, @ToDate, 102)
+ 
+		IF DATEDIFF(DAY, @FIRSTWIDATE, @CURRDATE) > 7 AND @daterangevalidiationrequired = 'Y'
+		BEGIN
+			SELECT 'Date difference cannot be more than 7 days'
+		END
+		ELSE
+		BEGIN
+			WITH LastAssignment AS (
+				SELECT winame, MAX(assigneddatetime) AS LastAssignedToTeamDate
+				FROM rakcas.dbo.RAK_V_SRO_received_History WITH (NOLOCK)
+				WHERE teamassigned = @Team AND identifier = 'Assigned' AND CAST(assigneddatetime AS DATE) BETWEEN CAST(@FromDate AS DATE) AND CAST(@ToDate AS DATE)
+				GROUP BY winame
+			), LastActionDetails AS (
+				SELECT h.winame, h.wsname AS LastActionedWorkstep, h.username AS LastActionedBy, h.decision AS LastDecision, h.actiondatetime AS LastActionDatetime, h.remarks AS LastRemarks, h.rejectreasons, ROW_NUMBER() OVER(PARTITION BY h.winame ORDER BY h.actiondatetime DESC) as rn
+				FROM rakcas.dbo.RAK_V_SRO_received_History h WITH (NOLOCK)
+				INNER JOIN LastAssignment la ON h.winame = la.winame
+				WHERE h."Last Team Assigned" = @Team AND h.wsname IN ('checker', 'Maker') AND h.actiondatetime > la.LastAssignedToTeamDate
+			)
+			INSERT INTO #TMP
+			SELECT b.wi_name, b.Service_Request_Type, CHAR(39) + b.cif_id, CHAR(39) + b.Agreement_Number, CHAR(39) + b.ERCN_Number, b.Pre_Paid_Pack_Id, b.IntiatorUserGroup, b.IntoducedBy, b.IntoducedAt, b.current_ws,
+				CASE WHEN b.current_ws IN ('Exit', 'Reject') THEN 'NA' ELSE b.Team END,
+				lad.LastActionedWorkstep, lad.LastActionedBy, lad.LastDecision, la.LastAssignedToTeamDate, lad.LastActionDatetime, lad.LastRemarks,
+				rakcas.dbo.getRejectReasons_SRO(lad.rejectreasons, 'SRO'), currentHist.EntryDateTime,
+				CASE WHEN b.current_ws NOT IN ('Exit','Reject') THEN rakcas.dbo.GetTatCalculation_SRO(currentHist.EntryDateTime, GETDATE()) ELSE 'NA' END
+			FROM rakcas.[dbo].[RB_SRO_EXTTABLE] b WITH (NOLOCK)
+			INNER JOIN LastAssignment la ON b.wi_name = la.winame
+			LEFT JOIN LastActionDetails lad ON b.wi_name = lad.winame AND lad.rn = 1
+			OUTER APPLY (
+				SELECT TOP 1 ENTRYDATETIME AS EntryDateTime
+				FROM rakcas.dbo.USR_0_SRO_WIHISTORY hist WITH (NOLOCK)
+				WHERE hist.WINAME = b.WI_NAME AND hist.ACTIONDATETIME IS NULL ORDER BY hist.ENTRYDATETIME DESC
+			) AS currentHist;
+		END
+	END
+ 
+	IF @OrderBy = '2'
+	BEGIN
+		SELECT * FROM ( SELECT row_number() OVER ( ORDER BY "WorkItem Number" ASC ) AS "S.No.", * FROM #TMP ) d
+		WHERE "S.No." BETWEEN (cast(@KeyField AS INT) - cast(@BatchSize AS INT) - 1) AND (cast(@KeyField AS INT) - 1)
+		ORDER BY "S.No." DESC;
+	END
+	ELSE
+	BEGIN
+		SELECT * FROM ( SELECT row_number() OVER ( ORDER BY "WorkItem Number" ASC ) AS "S.No.", * FROM #TMP ) d
+		WHERE "S.No." BETWEEN (cast(@KeyField AS INT) + 1) AND (cast(@KeyField AS INT) + cast(@BatchSize AS INT))
+		ORDER BY "S.No." ASC;
+	END
+ 
+	DROP TABLE #TMP;
+END;
