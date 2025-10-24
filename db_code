@@ -79,6 +79,13 @@ BEGIN
 		SELECT * FROM ( SELECT row_number() OVER ( ORDER BY "WorkItem Number" ASC ) AS "S.No.", * FROM #TMP ) d
 		WHERE "S.No." BETWEEN (cast(@KeyField AS INT) + 1) AND (cast(@KeyField AS INT) + cast(@BatchSize AS INT))
 		ORDER BY "S.No." ASC;
+
+
+
+
+regarding TF_Bot, while selecting rejet to TF maker decision unable to add reject decision
+ 
+by manually
 	END
  
 	DROP TABLE #TMP;
