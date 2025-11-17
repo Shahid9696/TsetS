@@ -20,25 +20,25 @@ select
 
         b.current_ws,
 
-        (CASE WHEN CURRENT_WS IN (''Exit'',''Reject'') then ''NA'' ELSE Team END) CURRENTTEAM,
+        (CASE WHEN CURRENT_WS IN ('Exit','Reject') then 'NA' ELSE Team END) CURRENTTEAM,
  
         -- ActionedBy = wsname (from latest action after assigned)
 
-        ISNULL(latest.wsname, '''') ActionedBy,
+        ISNULL(latest.wsname, '') ActionedBy,
  
         -- ActionedBy = username (same alias as original; returns username from same latest action row)
 
-        ISNULL(latest.username, '''') ActionedBy,
+        ISNULL(latest.username, '') ActionedBy,
  
-        ISNULL(latest.decision, '''') decision,
+        ISNULL(latest.decision, '') decision,
  
         assigned.max_assigneddatetime entrydatetime,
  
         latest.actiondatetime,
  
-        ISNULL(latest.remarks, '''') remarks,
+        ISNULL(latest.remarks, '') remarks,
  
-        rakcas.dbo.[getRejectReasons_SRO](ISNULL(latest.rejectreasons, ''''),''SRO'') rejectreasons,
+        rakcas.dbo.[getRejectReasons_SRO](ISNULL(latest.rejectreasons, ''),'SRO') rejectreasons,
  
         (SELECT TOP 1 ENTRYDATETIME
 
@@ -48,7 +48,7 @@ select
 
             ORDER BY ENTRYDATETIME DESC) ,
  
-        (case when b.current_ws not in (''Exit'',''Reject'') then 
+        (case when b.current_ws not in ('Exit','Reject') then 
 
             rakcas.dbo.[GetTatCalculation_SRO](
 
@@ -64,7 +64,7 @@ select
 
             )
 
-         else ''NA'' END) AGEING
+         else 'NA' END) AGEING
  
     from rakcas.[dbo].[RB_SRO_EXTTABLE] b WITH(NOLOCK)
  
@@ -78,9 +78,9 @@ select
 
         where g.winame = b.wi_name
 
-          and (g.teamassigned = ''' + @Team + ''')
+          and (g.teamassigned = '2nd CB RC approval')
 
-          and g.identifier = ''Assigned''
+          and g.identifier = 'Assigned'
 
     ) assigned
  
@@ -106,11 +106,11 @@ select
 
         where f.winame = b.wi_name
 
-          and f.''Last Team Assigned'' = ''' + @Team + '''
+          and f."Last Team Assigned" = '2nd CB RC approval'
 
-          and f.wsname in (''checker'', ''Maker'')
+          and f.wsname in ('checker', 'Maker')
 
-          and f.actiondatetime > ISNULL(assigned.max_assigneddatetime, '''' /* NULL-safe */)
+          and f.actiondatetime > ISNULL(assigned.max_assigneddatetime, '' /* NULL-safe */)
 
         order by f.actiondatetime desc
 
@@ -122,13 +122,13 @@ select
 
         from rakcas.dbo.RAK_V_SRO_received_History a WITH(NOLOCK)
 
-        where a.teamassigned = ''' + @Team + '''
+        where a.teamassigned ='2nd CB RC approval'
 
           and CONVERT(DATE, a.assigneddatetime, 102) between
 
-              CONVERT(DATE, ''' + @FromDate + ''' , 102) and CONVERT(DATE, ''' + @ToDate + ''' , 102)
+              CONVERT(DATE, '2019-11-01' , 102) and CONVERT(DATE, '2009-11-03' , 102)
 
-          and a.identifier = ''Assigned''
+          and a.identifier = 'Assigned'
 
     )
  
