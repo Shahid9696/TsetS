@@ -1,134 +1,87 @@
-select
-
-        b.wi_name,
-
-        b.Service_Request_Type,
-
-        CHAR(39)+b.cif_id,
-
-        CHAR(39)+b.Agreement_Number,
-
-        CHAR(39)+b.ERCN_Number,
-
-        b.Pre_Paid_Pack_Id,
-
-        b.IntiatorUserGroup,
-
-        b.IntoducedBy,
-
-        b.IntoducedAt,
-
-        b.current_ws,
-
-        (CASE WHEN CURRENT_WS IN ('Exit','Reject') then 'NA' ELSE Team END) CURRENTTEAM,
- 
-        -- ActionedBy = wsname (from latest action after assigned)
-
-        ISNULL(latest.wsname, '') ActionedBy,
- 
-        -- ActionedBy = username (same alias as original; returns username from same latest action row)
-
-        ISNULL(latest.username, '') ActionedBy,
- 
-        ISNULL(latest.decision, '') decision,
- 
-        assigned.max_assigneddatetime entrydatetime,
- 
-        latest.actiondatetime,
- 
-        ISNULL(latest.remarks, '') remarks,
- 
-        rakcas.dbo.[getRejectReasons_SRO](ISNULL(latest.rejectreasons, ''),'SRO') rejectreasons,
- 
-        (SELECT TOP 1 ENTRYDATETIME
-
-            FROM rakcas.dbo.USR_0_SRO_WIHISTORY with (nolock)
-
-            WHERE WINAME = b.WI_NAME AND ACTIONDATETIME IS NULL
-
-            ORDER BY ENTRYDATETIME DESC) ,
- 
-        (case when b.current_ws not in ('Exit','Reject') then 
-
-            rakcas.dbo.[GetTatCalculation_SRO](
-
-                (SELECT TOP 1 ENTRYDATETIME
-
-                    FROM rakcas.dbo.USR_0_SRO_WIHISTORY with (nolock)
-
-                    WHERE WINAME = B.WI_NAME AND ACTIONDATETIME IS NULL
-
-                    ORDER BY ENTRYDATETIME DESC),
-
-                getdate()
-
-            )
-
-         else 'NA' END) AGEING
- 
-    from rakcas.[dbo].[RB_SRO_EXTTABLE] b WITH(NOLOCK)
- 
-    -- compute the latest assigned datetime (single aggregated lookup)
-
+   SELECT DISTINCT
+        a.winame
+    FROM
+        rakcas.dbo.RAK_V_SRO_received_History a WITH (NOLOCK)
+    WHERE
+        a.teamassigned = '2nd CB RC approval'
+        AND a.identifier = 'Assigned'
+        -- This is now SARGable and can use an index on assigneddatetime
+        AND a.assigneddatetime >= '2019-11-01 00:00:00'
+        AND a.assigneddatetime < '2019-11-04 00:00:00' -- Corrected date range
+)
+SELECT
+    b.wi_name,
+    b.Service_Request_Type,
+    CHAR(39) + b.cif_id AS cif_id,
+    CHAR(39) + b.Agreement_Number AS Agreement_Number,
+    CHAR(39) + b.ERCN_Number AS ERCN_Number,
+    b.Pre_Paid_Pack_Id,
+    b.IntiatorUserGroup,
+    b.IntoducedBy,
+    b.IntoducedAt,
+    b.current_ws,
+    (CASE WHEN b.CURRENT_WS IN ('Exit', 'Reject') THEN 'NA' ELSE b.Team END) AS CURRENTTEAM,
+    -- Fixed duplicate alias bug. Renamed this to ActionedByWS
+    ISNULL(latest.wsname, '') AS ActionedByWS,
+    ISNULL(latest.username, '') AS ActionedBy,
+    ISNULL(latest.decision, '') AS decision,
+    assigned.max_assigneddatetime AS entrydatetime,
+    latest.actiondatetime,
+    ISNULL(latest.remarks, '') AS remarks,
+    -- This UDF call is still a performance risk, but the input (latest.rejectreasons) is fetched more efficiently.
+    rakcas.dbo.[getRejectReasons_SRO](ISNULL(latest.rejectreasons, ''), 'SRO') AS rejectreasons,
+    -- Replaced slow correlated subquery with the result from last_entry APPLY
+    last_entry.ENTRYDATETIME AS StandaloneEntryTime, -- Renamed this column for clarity
+    -- Replaced the second identical correlated subquery with the last_entry.ENTRYDATETIME
+    (CASE
+        WHEN b.current_ws NOT IN ('Exit', 'Reject')
+        THEN rakcas.dbo.[GetTatCalculation_SRO](last_entry.ENTRYDATETIME, GETDATE())
+        ELSE 'NA'
+     END) AS AGEING
+FROM
+    rakcas.[dbo].[RB_SRO_EXTTABLE] b WITH (NOLOCK)
+    -- 1. Use an INNER JOIN on the pre-filtered CTE. This is much faster than `WHERE IN (...)`
+    INNER JOIN FilteredWIs fw ON b.wi_name = fw.winame
+    -- 2. This APPLY is unchanged, it's efficient
     OUTER APPLY (
-
-        select max(g.assigneddatetime) as max_assigneddatetime
-
-        from rakcas.dbo.RAK_V_SRO_received_History g with(nolock)
-
-        where g.winame = b.wi_name
-
-          and (g.teamassigned = '2nd CB RC approval')
-
-          and g.identifier = 'Assigned'
-
+        SELECT
+            MAX(g.assigneddatetime) AS max_assigneddatetime
+        FROM
+            rakcas.dbo.RAK_V_SRO_received_History g WITH (NOLOCK)
+        WHERE
+            g.winame = b.wi_name
+            AND g.teamassigned = '2nd CB RC approval'
+            AND g.identifier = 'Assigned'
     ) assigned
- 
-    -- pick the top 1 action row that is after the assigned datetime and is from the given team & wsname in checker/maker
-
+    -- 3. This APPLY is modified to fix a bad ISNULL comparison
     OUTER APPLY (
-
-        select top 1
-
+        SELECT TOP 1
             f.wsname,
-
             f.username,
-
             f.decision,
-
             f.actiondatetime,
-
             f.remarks,
-
             f.rejectreasons
-
-        from rakcas.dbo.RAK_V_SRO_received_History f with(nolock)
-
-        where f.winame = b.wi_name
-
-          and f."Last Team Assigned" = '2nd CB RC approval'
-
-          and f.wsname in ('checker', 'Maker')
-
-          and f.actiondatetime > ISNULL(assigned.max_assigneddatetime, '' /* NULL-safe */)
-
-        order by f.actiondatetime desc
-
+        FROM
+            rakcas.dbo.RAK_V_SRO_received_History f WITH (NOLOCK)
+        WHERE
+            f.winame = b.wi_name
+            AND f."Last Team Assigned" = '2nd CB RC approval'
+            AND f.wsname IN ('checker', 'Maker')
+            -- Fixed bad conversion: comparing datetime to a base date, not an empty string ''
+            AND f.actiondatetime > ISNULL(assigned.max_assigneddatetime, '1900-01-01')
+        ORDER BY
+            f.actiondatetime DESC
     ) latest
- 
-    where b.wi_name in (
-
-        select winame
-
-        from rakcas.dbo.RAK_V_SRO_received_History a WITH(NOLOCK)
-
-        where a.teamassigned ='2nd CB RC approval'
-
-          and CONVERT(DATE, a.assigneddatetime, 102) between
-
-              CONVERT(DATE, '2019-11-01' , 102) and CONVERT(DATE, '2009-11-03' , 102)
-
-          and a.identifier = 'Assigned'
-
-    )
- 
+    -- 4. NEW APPLY: Replaces the two slow correlated subqueries in the SELECT list
+    OUTER APPLY (
+        SELECT TOP 1
+            h.ENTRYDATETIME
+        FROM
+            rakcas.dbo.USR_0_SRO_WIHISTORY h WITH (NOLOCK)
+        WHERE
+            h.WINAME = b.WI_NAME
+            AND h.ACTIONDATETIME IS NULL
+        ORDER BY
+            h.ENTRYDATETIME DESC
+    ) last_entry;
