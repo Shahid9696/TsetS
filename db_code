@@ -1,248 +1,134 @@
-USE [rakcas]
-GO
-/****** Object:  StoredProcedure [dbo].[RAK_SRO_Workitem_Received_Report]    Script Date: 10/16/2025 10:53:25 AM ******/
-SET ANSI_NULLS ON
-GO
-SET QUOTED_IDENTIFIER ON
-GO
+select
 
--- =============================================
--- Author	  :	<Sharath Rajan,SRO Workitem Received Report>
--- Create date: <24th Sep 2019>
--- Description:	<Report to pull out all the Received assigned from selected in SRO Process>
--- =============================================
-CREATE PROCEDURE [dbo].[RAK_SRO_Workitem_Received_Report] (
-	@FromDate VARCHAR(50)
-	,@ToDate VARCHAR(50)
-	,@Team VARCHAR(200)
-	,@daterangevalidiationrequired VARCHAR(10)
-	,@BatchingReq NVARCHAR(5)
-	,@BatchSize NVARCHAR(20)
-	,@OrderBy INT
-	,@SortField NVARCHAR(64)
-	,@SortFieldValue NVARCHAR(64)
-	,@SortOrder NVARCHAR(5)
-	,@KeyField NVARCHAR(64)
-	)
-AS
-BEGIN
-	DECLARE @QueryString VARCHAR(MAX)
-	DECLARE @FIRSTWIDATE DATE
-	DECLARE @CURRDATE DATE
+        b.wi_name,
 
-	SET @QueryString = ''
+        b.Service_Request_Type,
 
-	CREATE TABLE #TMP (
-		"WorkItem Number" NVARCHAR(200)
-		,"Service Request Type" NVARCHAR(200)
-		,"CIF ID" NVARCHAR(200)
-		,"Agreement Number" NVARCHAR(200)
-		,"ECRN Number" NVARCHAR(200)
-		,"Prepaid pack ID" NVARCHAR(200)
-		,"Initiating Team" NVARCHAR(200)
-		,"Introduced By" NVARCHAR(200)
-		,"Introduced Date" DATETIME
-		,"Current Workstep" NVARCHAR(200)
-		,"Current Team Assigned" NVARCHAR(200)
-		,"Last Actioned Workstep (Team)" NVARCHAR(200)
-		,"Last Actioned By (Team)" NVARCHAR(200)
-		,"Last Decision (Team)" NVARCHAR(200)
-		,"Last Entry Datetime (Team)" DATETIME
-		,"Last Action Datetime (Team)" DATETIME
-		,"Last Remarks (Team)" NVARCHAR(MAX)
-		,"Last Reject Reason" NVARCHAR(MAX)
-		,"Current Workstep Entrydatetime" DATETIME
-		,"Current Queue Ageing" NVARCHAR(200)
-		)
+        CHAR(39)+b.cif_id,
 
-	IF @FromDate <> ''
-		AND @ToDate <> ''
-	BEGIN
-		SET @FIRSTWIDATE = CONVERT(DATE, @FromDate, 102)
-		SET @CURRDATE = CONVERT(DATE, @ToDate, 102)
+        CHAR(39)+b.Agreement_Number,
 
-		IF DATEDIFF(DAY, @FIRSTWIDATE, @CURRDATE) > 7
-			AND @daterangevalidiationrequired = 'Y'
-		BEGIN
-			--PRINT DATEDIFF(DAY,@CURRDATE,@FIRSTBAISWIDATE)
-			SELECT 'Date difference cannot be more than 7 days'
-		END
-		ELSE
-		BEGIN
-			SET @QueryString = 'select b.wi_name,b.Service_Request_Type, CHAR(39)+b.cif_id,
-					CHAR(39)+b.Agreement_Number,CHAR(39)+b.ERCN_Number,
-  b.Pre_Paid_Pack_Id,b.IntiatorUserGroup,
-					b.IntoducedBy,b.IntoducedAt,b.current_ws,
-				 (CASE WHEN CURRENT_WS IN (''Exit'',''Reject'') then ''NA'' ELSE Team END) CURRENTTEAM,
+        CHAR(39)+b.ERCN_Number,
 
-				 	 (select top 1 wsname from  rakcas.dbo.RAK_V_SRO_received_History f with(nolock)
-where f.winame=b.wi_name and f."Last Team Assigned"= ''' + @Team + ''' and f.wsname in (''checker'' ,''Maker'') 
-and f.actiondatetime> (select  max(g.assigneddatetime)  from  rakcas.dbo.RAK_V_SRO_received_History g with(nolock)
-where g.winame=b.wi_name and
- (g.teamassigned= ''' + @Team + ''' ) 
- and g.identifier =''Assigned''
-)  order by actiondatetime desc
-) ActionedBy,
+        b.Pre_Paid_Pack_Id,
 
+        b.IntiatorUserGroup,
 
-				 (select top 1 username from  rakcas.dbo.RAK_V_SRO_received_History f with(nolock)
-where f.winame=b.wi_name and f."Last Team Assigned"= ''' + @Team + 
-				''' and f.wsname in (''checker'' ,''Maker'') 
-and f.actiondatetime> (select  max(g.assigneddatetime)  from  rakcas.dbo.RAK_V_SRO_received_History g with(nolock)
-where g.winame=b.wi_name and
- (g.teamassigned= ''' + @Team + ''' ) 
- and g.identifier =''Assigned''
-)  order by actiondatetime desc
-) ActionedBy,
+        b.IntoducedBy,
 
+        b.IntoducedAt,
 
-(select top 1 decision from  rakcas.dbo.RAK_V_SRO_received_History f with(nolock)
-where f.winame=b.wi_name and f."Last Team Assigned"=''' + @Team + '''   and f.wsname in (''checker'' ,''Maker'') 
-and f.actiondatetime> (select  max(g.assigneddatetime)  from  rakcas.dbo.RAK_V_SRO_received_History g with(nolock)
-where g.winame=b.wi_name and
- (g.teamassigned= ''' + @Team + ''' ) 
- and g.identifier  =''Assigned''
-) order by actiondatetime desc
-) decision,
+        b.current_ws,
 
-      (select  max(g.assigneddatetime)  from  rakcas.dbo.RAK_V_SRO_received_History g with(nolock)
-where g.winame=b.wi_name and
- (g.teamassigned= ''' + @Team + 
-				''' ) 
- and g.identifier =''Assigned''
-) 
- entrydatetime,
-    (select max(f.actiondatetime) from  rakcas.dbo.RAK_V_SRO_received_History f with(nolock)
-where f.winame=b.wi_name and f."Last Team Assigned"= ''' + @Team + '''    and f.wsname in (''checker'' ,''Maker'') 
-and f.actiondatetime> (select  max(g.assigneddatetime)  from  rakcas.dbo.RAK_V_SRO_received_History g with(nolock)
-where g.winame=b.wi_name and
- (g.teamassigned= ''' + @Team + ''' ) 
- and g.identifier  =''Assigned''
-) 
-) actiondatetime,
-
-
-
+        (CASE WHEN CURRENT_WS IN (''Exit'',''Reject'') then ''NA'' ELSE Team END) CURRENTTEAM,
  
- (select top 1 remarks from  rakcas.dbo.RAK_V_SRO_received_History f with(nolock)
-where f.winame=b.wi_name and f."Last Team Assigned"= ''' + @Team + '''   and f.wsname in (''checker'' ,''Maker'') 
-and f.actiondatetime> (select  max(g.assigneddatetime)  from  rakcas.dbo.RAK_V_SRO_received_History g with(nolock)
-where g.winame=b.wi_name and
- (g.teamassigned= ''' + @Team + 
-				''' ) 
- and g.identifier  =''Assigned''
-)  order by actiondatetime desc
-) remarks
+        -- ActionedBy = wsname (from latest action after assigned)
 
-,
-  rakcas.dbo.[getRejectReasons_SRO]((select top 1 rejectreasons from  rakcas.dbo.RAK_V_SRO_received_History f with(nolock)
-where f.winame=b.wi_name and f."Last Team Assigned"= ''' + @Team + '''   and f.wsname in (''checker'' ,''Maker'')  
-and f.actiondatetime>  (select  max(g.assigneddatetime)  from  rakcas.dbo.RAK_V_SRO_received_History g with(nolock)
-where g.winame=b.wi_name and
- (g.teamassigned= ''' + @Team + 
-				''' ) 
- and g.identifier  =''Assigned''
-) order by actiondatetime desc
-),''SRO'') rejectreasons,
-
-(SELECT TOP 1 ENTRYDATETIME FROM
-rakcas.dbo.USR_0_SRO_WIHISTORY with (nolock) WHERE WINAME=B.WI_NAME AND ACTIONDATETIME IS NULL ORDER BY ENTRYDATETIME DESC),
-
-(case when b.current_ws not in (''Exit'',''Reject'') then 
-rakcas.dbo.[GetTatCalculation_SRO]( (SELECT TOP 1 ENTRYDATETIME FROM
-rakcas.dbo.USR_0_SRO_WIHISTORY with (nolock) WHERE WINAME=B.WI_NAME AND ACTIONDATETIME IS NULL ORDER BY ENTRYDATETIME DESC),getdate()) else 
-''NA'' END) AGEING
-
-from   rakcas.[dbo].[RB_SRO_EXTTABLE] b WITH(NOLOCK) where 
-b.wi_name in   (select winame from rakcas.dbo.RAK_V_SRO_received_History a WITH(NOLOCK)
-where a.teamassigned= ''' + @Team + ''' and CONVERT(DATE, a.assigneddatetime, 102)  between
- CONVERT(DATE, ''' + @FromDate + ''' , 102) and  CONVERT(DATE,  ''' + @ToDate + ''' , 102)
-  and identifier  =''Assigned''
+        ISNULL(latest.wsname, '''') ActionedBy,
  
-  ) 
-  '
-		END
-	END
+        -- ActionedBy = username (same alias as original; returns username from same latest action row)
 
-	PRINT @QueryString
+        ISNULL(latest.username, '''') ActionedBy,
+ 
+        ISNULL(latest.decision, '''') decision,
+ 
+        assigned.max_assigneddatetime entrydatetime,
+ 
+        latest.actiondatetime,
+ 
+        ISNULL(latest.remarks, '''') remarks,
+ 
+        rakcas.dbo.[getRejectReasons_SRO](ISNULL(latest.rejectreasons, ''''),''SRO'') rejectreasons,
+ 
+        (SELECT TOP 1 ENTRYDATETIME
 
-	INSERT #TMP
-	EXEC (@QueryString)
+            FROM rakcas.dbo.USR_0_SRO_WIHISTORY with (nolock)
 
-	IF @OrderBy = '2'
-	BEGIN
-		--PRINT 'in 2'
-		SELECT *
-		FROM (
-			SELECT row_number() OVER (
-					ORDER BY "WorkItem Number" ASC
-					) AS "S.No."
-				,"WorkItem Number"
-				,"Service Request Type"
-				,"CIF ID"
-				,"Agreement Number"
-				,"ECRN Number"
-				,"Prepaid pack ID"
-				,"Initiating Team"
-				,"Introduced By"
-				,"Introduced Date"
-				,"Current Team Assigned"
-				,"Current Workstep"
-				,"Current Workstep Entrydatetime"
-				,"Current Queue Ageing"
-				,"Last Actioned Workstep (Team)"
-				,"Last Actioned By (Team)"
-				,"Last Decision (Team)"
-				,"Last Entry Datetime (Team)"
-				,"Last Action Datetime (Team)"
-				,"Last Remarks (Team)"
-				,"Last Reject Reason"
-			FROM #TMP
-			) d
-		WHERE "S.No." BETWEEN (cast(@KeyField AS INT) - cast(@BatchSize AS INT) - 1)
-				AND (cast(@KeyField AS INT) - 1)
-		ORDER BY "S.No." DESC;
-	END
-	ELSE
-	BEGIN
-		--PRINT 'in 3'
-		SELECT *
-		FROM (
-			SELECT row_number() OVER (
-					ORDER BY "WorkItem Number" ASC
-					) AS "S.No."
-				,"WorkItem Number"
-				,"Service Request Type"
-				,"CIF ID"
-				,"Agreement Number"
-				,"ECRN Number"
-				,"Prepaid pack ID"
-				,"Initiating Team"
-				,"Introduced By"
-				,"Introduced Date"
-				,"Current Team Assigned"
-				,"Current Workstep"
-				,"Current Workstep Entrydatetime"
-				,"Current Queue Ageing"
-				,"Last Actioned Workstep (Team)"
-				,"Last Actioned By (Team)"
-				,"Last Decision (Team)"
-				,"Last Entry Datetime (Team)"
-				,"Last Action Datetime (Team)"
-				,"Last Remarks (Team)"
-				,"Last Reject Reason"
-			FROM #TMP
-			) d
-		WHERE "S.No." BETWEEN (cast(@KeyField AS INT) + 1)
-				AND (cast(@KeyField AS INT) + cast(@BatchSize AS INT))
-		ORDER BY "S.No." ASC;
-	END
+            WHERE WINAME = b.WI_NAME AND ACTIONDATETIME IS NULL
 
-	--PRINT 'query End'
-	PRINT 'query End'
-END;
+            ORDER BY ENTRYDATETIME DESC) ,
+ 
+        (case when b.current_ws not in (''Exit'',''Reject'') then 
 
-DROP TABLE #TMP;
-	--Exec [RAK_SRO_Workitem_Received_Report] '2019-11-01','2019-11-07','1st Chargeback','Y','Y','200','','','','',''
+            rakcas.dbo.[GetTatCalculation_SRO](
 
-GO
+                (SELECT TOP 1 ENTRYDATETIME
+
+                    FROM rakcas.dbo.USR_0_SRO_WIHISTORY with (nolock)
+
+                    WHERE WINAME = B.WI_NAME AND ACTIONDATETIME IS NULL
+
+                    ORDER BY ENTRYDATETIME DESC),
+
+                getdate()
+
+            )
+
+         else ''NA'' END) AGEING
+ 
+    from rakcas.[dbo].[RB_SRO_EXTTABLE] b WITH(NOLOCK)
+ 
+    -- compute the latest assigned datetime (single aggregated lookup)
+
+    OUTER APPLY (
+
+        select max(g.assigneddatetime) as max_assigneddatetime
+
+        from rakcas.dbo.RAK_V_SRO_received_History g with(nolock)
+
+        where g.winame = b.wi_name
+
+          and (g.teamassigned = ''' + @Team + ''')
+
+          and g.identifier = ''Assigned''
+
+    ) assigned
+ 
+    -- pick the top 1 action row that is after the assigned datetime and is from the given team & wsname in checker/maker
+
+    OUTER APPLY (
+
+        select top 1
+
+            f.wsname,
+
+            f.username,
+
+            f.decision,
+
+            f.actiondatetime,
+
+            f.remarks,
+
+            f.rejectreasons
+
+        from rakcas.dbo.RAK_V_SRO_received_History f with(nolock)
+
+        where f.winame = b.wi_name
+
+          and f.''Last Team Assigned'' = ''' + @Team + '''
+
+          and f.wsname in (''checker'', ''Maker'')
+
+          and f.actiondatetime > ISNULL(assigned.max_assigneddatetime, '''' /* NULL-safe */)
+
+        order by f.actiondatetime desc
+
+    ) latest
+ 
+    where b.wi_name in (
+
+        select winame
+
+        from rakcas.dbo.RAK_V_SRO_received_History a WITH(NOLOCK)
+
+        where a.teamassigned = ''' + @Team + '''
+
+          and CONVERT(DATE, a.assigneddatetime, 102) between
+
+              CONVERT(DATE, ''' + @FromDate + ''' , 102) and CONVERT(DATE, ''' + @ToDate + ''' , 102)
+
+          and a.identifier = ''Assigned''
+
+    )
+ 
