@@ -1,49 +1,19 @@
-DECLARE eight_day_cursor CURSOR FOR
-SELECT WI_NAME, CREATED_AT 
-FROM NG_TS_EXTTABLE WITH(NOLOCK)
-WHERE CURRENT_WS NOT IN ('Closed', 'Archival')
-  AND DATEDIFF(DAY, CREATED_AT, GETDATE()) = 8;
- 
-OPEN eight_day_cursor;
-FETCH NEXT FROM eight_day_cursor INTO @WINAME, @CREATED_AT;
- 
-WHILE @@FETCH_STATUS = 0
-BEGIN
-    -- Fetch Email To
-    SELECT @MAIL_TO = EMAIL_ID 
-    FROM NG_TS_EXTTABLE WITH(NOLOCK)
-    WHERE WI_NAME = @WINAME;
- 
-    -- Fetch template
-    SELECT 
-        @MAIL_FROM = FROM_MAILID,
-        @MAIL_SUBJECT = MAIL_SUBJECT,
-        @MAIL_TEMPLATE = MAIL_TEMPLATE
-    FROM NG_TS_TEMPLATE_MAPPING_MASTER WITH(NOLOCK)
-    WHERE TEMPLATE_ID = '39'
-      AND SERVICE_NAME = 'Card Dispute'
-      AND ISACTIVE = 'Y';
- 
-    -- Replace WI_NAME in template
-    SET @MAIL_TEMPLATE = REPLACE(@MAIL_TEMPLATE, '$WI_NAME$', @WINAME);
- 
-    -- Insert into WFMAILQUEUETABLE
-    INSERT INTO WFMAILQUEUETABLE
-    (
-        mailFrom,mailTo,mailCC,mailBCC,mailSubject,mailMessage,mailContentType,
-        mailPriority,mailStatus,insertedBy,mailActionType,insertedTime,
-        processDefId,processInstanceId
-    )
-    VALUES
-    (
-        @MAIL_FROM, @MAIL_TO, NULL, NULL, @MAIL_SUBJECT, 
-        @MAIL_TEMPLATE, 'text/html;charset=UTF-8',
-        1,'N','SYSTEM','TRIGGER',GETDATE(),
-        @ProcessDefID,@WINAME
-    );
- 
-    FETCH NEXT FROM eight_day_cursor INTO @WINAME, @CREATED_AT;
-END
- 
-CLOSE eight_day_cursor;
-DEALLOCATE eight_day_cursor;
+
+select processinstanceid,activityname,entryDATETIME,* from QUEUEVIEW 
+where processname ='SRB' and activityname in('Q2','Q4','Ops_Monitor') 
+
+CREATE TABLE [dbo].[USR_0_SRB_SLA_TAT_MASTER](
+	[ID] [int] IDENTITY(1,1) NOT NULL,
+	[WORKSTEP_NAME] [nvarchar](200) NULL,
+	[TAT_IN_DAYS] [nvarchar](10) NULL,
+	[ESCALATION_MAIL] [nvarchar](500) NULL
+) ON [PRIMARY]
+GO
+
+insert into USR_0_SRB_SLA_TAT_MASTER (WORKSTEP_NAME,TAT_IN_DAYS,ESCALATION_MAIL) values('Business_Exception','10','')
+insert into USR_0_SRB_SLA_TAT_MASTER (WORKSTEP_NAME,TAT_IN_DAYS,ESCALATION_MAIL) values('Compliance','10','')
+insert into USR_0_SRB_SLA_TAT_MASTER (WORKSTEP_NAME,TAT_IN_DAYS,ESCALATION_MAIL) values('Ops_Monitor','3','Sukesh.Shetty@rakbank.ae,Harish.Unnikrishnan@rakbank.ae,fconrad@rakbank.ae,Vaishnavi.Sakthivelrajan@rakbank.ae,K.Arooj@rakbank.ae')
+insert into USR_0_SRB_SLA_TAT_MASTER (WORKSTEP_NAME,TAT_IN_DAYS,ESCALATION_MAIL) values('Q2','3','Sukesh.Shetty@rakbank.ae,Harish.Unnikrishnan@rakbank.ae,fconrad@rakbank.ae,Vaishnavi.Sakthivelrajan@rakbank.ae,K.Arooj@rakbank.ae')
+insert into USR_0_SRB_SLA_TAT_MASTER (WORKSTEP_NAME,TAT_IN_DAYS,ESCALATION_MAIL) values('Q4','3','Sukesh.Shetty@rakbank.ae,Harish.Unnikrishnan@rakbank.ae,fconrad@rakbank.ae,Vaishnavi.Sakthivelrajan@rakbank.ae,K.Arooj@rakbank.ae')
+
+
