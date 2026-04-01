@@ -2,61 +2,134 @@ ALTER PROCEDURE [dbo].[NG_SRB_TAT_Escalation_Mail]
 AS
 BEGIN
     SET NOCOUNT ON;
-    SET DATEFIRST 7;
+    SET DATEFIRST 7;  -- Sunday = 1, Saturday = 7
  
     DECLARE 
         @MAIL_FROM NVARCHAR(200) = 'test5@rakbanktst.ae',
         @Today DATE = CAST(GETDATE() AS DATE);
  
+    -- Create a Temp Table to hold the calculated logic
+    IF OBJECT_ID('tempdb..#TempWorkingDays') IS NOT NULL 
+        DROP TABLE #TempWorkingDays;
+ 
+    CREATE TABLE #TempWorkingDays (
+        processinstanceid NVARCHAR(100),
+        processname NVARCHAR(100),
+        activityname NVARCHAR(100),
+        entryDATETIME DATETIME,
+        ProcessDefID INT,
+        WorkItemID INT,
+        ActivityID INT,
+        TAT_IN_DAYS INT,
+        ESCALATION_MAIL NVARCHAR(MAX),
+        WorkingDaysElapsed INT
+    );
+ 
+    -- Use the same logic to populate the Temp Table
+    ;WITH BaseData AS
+    (
+        SELECT
+            q.processinstanceid,
+            q.processname,
+            q.activityname,
+            q.entryDATETIME,
+            q.processdefid   AS ProcessDefID,
+            q.workitemid      AS WorkItemID,
+            q.activityid      AS ActivityID,
+            m.TAT_IN_DAYS,
+            m.ESCALATION_MAIL,
+            CASE 
+                WHEN DATEPART(WEEKDAY, q.entryDATETIME) = 7 
+                    THEN DATEADD(DAY, 2, CAST(q.entryDATETIME AS DATE))
+                WHEN DATEPART(WEEKDAY, q.entryDATETIME) = 1 
+                    THEN DATEADD(DAY, 1, CAST(q.entryDATETIME AS DATE))
+                ELSE CAST(q.entryDATETIME AS DATE)
+            END AS SLA_StartDate
+        FROM QUEUEVIEW q
+        INNER JOIN USR_0_SRB_SLA_TAT_MASTER m
+            ON m.WORKSTEP_NAME = q.activityname
+        INNER JOIN RB_SRB_EXTTABLE e
+            ON e.WI_NAME = q.processinstanceid
+        WHERE q.processname = 'SRB'
+          AND e.isRoutingForEFT='Y'
+          AND q.activityname IN ('Ops_Monitor')
+          AND m.ESCALATION_MAIL IS NOT NULL
+          AND m.ESCALATION_MAIL <> ''
+    ),
+    DateSeries AS
+    (
+        SELECT
+            b.*,
+            b.SLA_StartDate AS WorkDate
+        FROM BaseData b
+        UNION ALL
+        SELECT
+            d.processinstanceid,
+            d.processname,
+            d.activityname,
+            d.entryDATETIME,
+            d.ProcessDefID,
+            d.WorkItemID,
+            d.ActivityID,
+            d.TAT_IN_DAYS,
+            d.ESCALATION_MAIL,
+            d.SLA_StartDate,
+            DATEADD(DAY, 1, d.WorkDate)
+        FROM DateSeries d
+        WHERE DATEADD(DAY, 1, d.WorkDate) <= @Today
+    )
+    INSERT INTO #TempWorkingDays
+    SELECT
+        processinstanceid,
+        processname,
+        activityname,
+        entryDATETIME,
+        ProcessDefID,
+        WorkItemID,
+        ActivityID,
+        TAT_IN_DAYS,
+        ESCALATION_MAIL,
+        COUNT(*) AS WorkingDaysElapsed
+    FROM DateSeries
+    WHERE DATEPART(WEEKDAY, WorkDate) NOT IN (1,7)
+    GROUP BY
+        processinstanceid, processname, activityname, entryDATETIME,
+        ProcessDefID, WorkItemID, ActivityID, TAT_IN_DAYS, ESCALATION_MAIL
+    OPTION (MAXRECURSION 0);
+ 
+    -- Perform the final INSERT into the permanent table using the temp table
     INSERT INTO WFMAILQUEUETABLE
     (
-         mailFrom, mailTo, mailCC, mailBCC, mailSubject, mailMessage, mailContentType,
-         attachmentISINDEX, attachmentNames, attachmentExts, mailPriority, mailStatus,
-         statusComments, lockedBy, successTime, LastLockTime, insertedBy,
-         mailActionType, insertedTime, processDefId, processInstanceId,
-         workitemId, activityId, noOfTrials, zipFlag, zipName, maxZipSize, alternateMessage
+         mailFrom, mailTo, mailCC, mailBCC, mailSubject, mailMessage,
+         mailContentType, attachmentISINDEX, attachmentNames, attachmentExts,
+         mailPriority, mailStatus, statusComments, lockedBy, successTime,
+         LastLockTime, insertedBy, mailActionType, insertedTime,
+         processDefId, processInstanceId, workitemId, activityId,
+         noOfTrials, zipFlag, zipName, maxZipSize, alternateMessage
     )
     SELECT
         @MAIL_FROM,
-        m.ESCALATION_MAIL,
-        NULL, NULL,
+        w.ESCALATION_MAIL,
+        NULL,
+        NULL,
         -- Subject
-        CAST(q.processinstanceid AS NVARCHAR(50)) + ' exceeding TAT ' + CAST(m.TAT_IN_DAYS AS NVARCHAR(10)) + ' working days ' + q.activityname,
+        CAST(w.processinstanceid AS NVARCHAR(50)) + ' exceeding TAT ' + CAST(w.TAT_IN_DAYS AS NVARCHAR(10)) + ' working days ' + w.activityname,
         -- HTML Body
         '<html><body>'
-        + '<p>Subject <b>' + CAST(q.processinstanceid AS NVARCHAR(50)) + '</b> '
-        + 'is pending in <b>' + q.activityname + '</b> '
-        + 'exceeding <b>' + CAST(m.TAT_IN_DAYS AS NVARCHAR(10)) + '</b> working days.'
+        + '<p>Subject <b>' + CAST(w.processinstanceid AS NVARCHAR(50)) + '</b> '
+        + 'is pending in <b>' + w.activityname + '</b> '
+        + 'exceeding <b>' + CAST(w.TAT_IN_DAYS AS NVARCHAR(10)) + '</b> working days.'
         + '</p><p>Kindly clear the same.</p>'
         + '</body></html>',
         'text/html;charset=UTF-8',
-        NULL, NULL, NULL, 1, 'N', NULL, NULL, NULL, NULL, 'CUSTOM', 'TRIGGER',
-        GETDATE(), q.processdefid, q.processinstanceid, q.workitemid, q.activityid, 1, NULL, NULL, NULL, NULL
-    FROM QUEUEVIEW q
-    INNER JOIN USR_0_SRB_SLA_TAT_MASTER m ON m.WORKSTEP_NAME = q.activityname
-    INNER JOIN RB_SRB_EXTTABLE e ON e.WI_NAME = q.processinstanceid
-    CROSS APPLY (
-        -- This logic mimics your "BaseData" weekend shift
-        SELECT CASE 
-            WHEN DATEPART(WEEKDAY, q.entryDATETIME) = 7 THEN DATEADD(DAY, 2, CAST(q.entryDATETIME AS DATE))
-            WHEN DATEPART(WEEKDAY, q.entryDATETIME) = 1 THEN DATEADD(DAY, 1, CAST(q.entryDATETIME AS DATE))
-            ELSE CAST(q.entryDATETIME AS DATE)
-        END AS SLA_StartDate
-    ) AS StartDateCalc
-    CROSS APPLY (
-        -- This counts the working days between SLA_StartDate and @Today
-        SELECT COUNT(*) AS WorkingDaysElapsed
-        FROM (
-            SELECT TOP (DATEDIFF(DAY, StartDateCalc.SLA_StartDate, @Today) + 1)
-                DATEADD(DAY, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1, StartDateCalc.SLA_StartDate) AS WDate
-            FROM master.dbo.spt_values v1 -- System table used as a number generator
-        ) AS DateRange
-        WHERE DATEPART(WEEKDAY, WDate) NOT IN (1, 7) -- Exclude Sun (1) and Sat (7)
-    ) AS DaysCalc
-    WHERE q.processname = 'SRB'
-      AND e.isRoutingForEFT = 'Y'
-      AND q.activityname = 'Ops_Monitor'
-      AND m.ESCALATION_MAIL IS NOT NULL 
-      AND m.ESCALATION_MAIL <> ''
-      AND DaysCalc.WorkingDaysElapsed >= CAST(m.TAT_IN_DAYS AS INT);
+        NULL, NULL, NULL, 1, 'N', NULL, NULL, NULL, NULL,
+        'CUSTOM', 'TRIGGER', GETDATE(),
+        w.ProcessDefID, w.processinstanceid, w.WorkItemID, w.ActivityID,
+        1, NULL, NULL, NULL, NULL
+    FROM #TempWorkingDays w
+    WHERE w.WorkingDaysElapsed >= CAST(w.TAT_IN_DAYS AS INT);
+ 
+    -- Cleanup
+    DROP TABLE #TempWorkingDays;
 END;
+GO
