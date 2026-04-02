@@ -1,31 +1,34 @@
+USE [rakcas] 
+GO
+
 ALTER PROCEDURE [dbo].[NG_SRB_TAT_Escalation_Mail]
 AS
 BEGIN
     SET NOCOUNT ON;
-    SET DATEFIRST 7;  -- Sunday = 1, Saturday = 7
- 
+    SET DATEFIRST 7;  -- Sunday = 1, Saturday = 7 (standard for Sat/Sun weekend)
+
     DECLARE 
         @MAIL_FROM NVARCHAR(200) = 'test5@rakbanktst.ae',
         @Today DATE = CAST(GETDATE() AS DATE);
- 
-    -- Create a Temp Table to hold the calculated logic
+
+    -- 1. Create a Temp Table for calculated data
     IF OBJECT_ID('tempdb..#TempWorkingDays') IS NOT NULL 
         DROP TABLE #TempWorkingDays;
- 
+
     CREATE TABLE #TempWorkingDays (
         processinstanceid NVARCHAR(100),
         processname NVARCHAR(100),
         activityname NVARCHAR(100),
         entryDATETIME DATETIME,
-        ProcessDefID INT,
-        WorkItemID INT,
-        ActivityID INT,
+        ProcessDefID NVARCHAR(100),  -- Changed to NVARCHAR to support alphanumeric strings
+        WorkItemID NVARCHAR(100),    -- Changed to NVARCHAR
+        ActivityID NVARCHAR(100),    -- Changed to NVARCHAR
         TAT_IN_DAYS INT,
         ESCALATION_MAIL NVARCHAR(MAX),
         WorkingDaysElapsed INT
     );
- 
-    -- Use the same logic to populate the Temp Table
+
+    -- 2. CTE to calculate elapsed working days
     ;WITH BaseData AS
     (
         SELECT
@@ -33,15 +36,16 @@ BEGIN
             q.processname,
             q.activityname,
             q.entryDATETIME,
-            q.processdefid   AS ProcessDefID,
+            q.processdefid    AS ProcessDefID,
             q.workitemid      AS WorkItemID,
             q.activityid      AS ActivityID,
             m.TAT_IN_DAYS,
             m.ESCALATION_MAIL,
+            -- Adjust StartDate: If it arrived on Sat/Sun, business clock starts Monday
             CASE 
-                WHEN DATEPART(WEEKDAY, q.entryDATETIME) = 7 
+                WHEN DATEPART(WEEKDAY, q.entryDATETIME) = 7 -- Saturday
                     THEN DATEADD(DAY, 2, CAST(q.entryDATETIME AS DATE))
-                WHEN DATEPART(WEEKDAY, q.entryDATETIME) = 1 
+                WHEN DATEPART(WEEKDAY, q.entryDATETIME) = 1 -- Sunday
                     THEN DATEADD(DAY, 1, CAST(q.entryDATETIME AS DATE))
                 ELSE CAST(q.entryDATETIME AS DATE)
             END AS SLA_StartDate
@@ -51,13 +55,13 @@ BEGIN
         INNER JOIN RB_SRB_EXTTABLE e
             ON e.WI_NAME = q.processinstanceid
         WHERE q.processname = 'SRB'
-          AND e.isRoutingForEFT='Y'
+          AND e.isRoutingForEFT = 'Y'
           AND q.activityname IN ('Ops_Monitor')
-          AND m.ESCALATION_MAIL IS NOT NULL
-          AND m.ESCALATION_MAIL <> ''
+          AND ISNULL(m.ESCALATION_MAIL, '') <> ''
     ),
     DateSeries AS
     (
+        -- Recursive part: generate dates from Start to Today
         SELECT
             b.*,
             b.SLA_StartDate AS WorkDate
@@ -91,13 +95,13 @@ BEGIN
         ESCALATION_MAIL,
         COUNT(*) AS WorkingDaysElapsed
     FROM DateSeries
-    WHERE DATEPART(WEEKDAY, WorkDate) NOT IN (1,7)
+    WHERE DATEPART(WEEKDAY, WorkDate) NOT IN (1,7) -- Exclude weekends
     GROUP BY
         processinstanceid, processname, activityname, entryDATETIME,
         ProcessDefID, WorkItemID, ActivityID, TAT_IN_DAYS, ESCALATION_MAIL
     OPTION (MAXRECURSION 0);
- 
-    -- Perform the final INSERT into the permanent table using the temp table
+
+    -- 3. Final INSERT into Mail Queue
     INSERT INTO WFMAILQUEUETABLE
     (
          mailFrom, mailTo, mailCC, mailBCC, mailSubject, mailMessage,
@@ -112,24 +116,39 @@ BEGIN
         w.ESCALATION_MAIL,
         NULL,
         NULL,
-        -- Subject
-        CAST(w.processinstanceid AS NVARCHAR(50)) + ' exceeding TAT ' + CAST(w.TAT_IN_DAYS AS NVARCHAR(10)) + ' working days ' + w.activityname,
-        -- HTML Body
-        '<html><body>'
-        + '<p>Subject <b>' + CAST(w.processinstanceid AS NVARCHAR(50)) + '</b> '
-        + 'is pending in <b>' + w.activityname + '</b> '
-        + 'exceeding <b>' + CAST(w.TAT_IN_DAYS AS NVARCHAR(10)) + '</b> working days.'
-        + '</p><p>Kindly clear the same.</p>'
-        + '</body></html>',
+        -- Subject: "WI_123 exceeding TAT (2 days) - Ops_Monitor"
+        N'Escalation: ' + CAST(w.processinstanceid AS NVARCHAR(50)) + N' exceeding TAT ' + CAST(w.TAT_IN_DAYS AS NVARCHAR(10)) + N' working days',
+        -- HTML Body: Includes Entry Date for clarity
+        N'<html><body style="font-family: Arial, sans-serif;">'
+        + N'<h3>TAT Escalation Alert</h3>'
+        + N'<p>The following work item has exceeded its allowed turnaround time:</p>'
+        + N'<ul>'
+        + N'<li><b>Process Instance ID:</b> ' + CAST(w.processinstanceid AS NVARCHAR(50)) + N'</li>'
+        + N'<li><b>Step Name:</b> ' + w.activityname + N'</li>'
+        + N'<li><b>Entry Date:</b> ' + CONVERT(NVARCHAR, w.entryDATETIME, 106) + N'</li>'
+        + N'<li><b>Working Days Elapsed:</b> ' + CAST(w.WorkingDaysElapsed AS NVARCHAR(10)) + N'</li>'
+        + N'<li><b>Allowed TAT:</b> ' + CAST(w.TAT_IN_DAYS AS NVARCHAR(10)) + N' days</li>'
+        + N'</ul>'
+        + N'<p>Kindly clear the same as soon as possible.</p>'
+        + N'</body></html>',
         'text/html;charset=UTF-8',
-        NULL, NULL, NULL, 1, 'N', NULL, NULL, NULL, NULL,
-        'CUSTOM', 'TRIGGER', GETDATE(),
-        w.ProcessDefID, w.processinstanceid, w.WorkItemID, w.ActivityID,
-        1, NULL, NULL, NULL, NULL
+        NULL, NULL, NULL, 
+        1,      -- mailPriority
+        'N',    -- mailStatus (New)
+        NULL, NULL, NULL, NULL,
+        'CUSTOM', 
+        'TRIGGER', 
+        GETDATE(),
+        w.ProcessDefID, 
+        w.processinstanceid, 
+        w.WorkItemID, 
+        w.ActivityID,
+        0,      -- noOfTrials
+        NULL, NULL, NULL, NULL
     FROM #TempWorkingDays w
     WHERE w.WorkingDaysElapsed >= CAST(w.TAT_IN_DAYS AS INT);
- 
-    -- Cleanup
+
+    -- 4. Cleanup
     DROP TABLE #TempWorkingDays;
 END;
 GO
