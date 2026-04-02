@@ -16,3 +16,22 @@ Email Body - Subject <WORKITEM NUMBER> is pending in <Queue Name> exceeding 3 wo
               @Infobip_SMS_isActive = Infobip_SMS_isActive,@infobip_Alert_id = Infobip_Alert_ID,@Infobip_Dynamic_Tags = Infobip_Dynamic_Tags from NG_TS_TEMPLATE_MAPPING_MASTER WITH(NOLOCK) where SERVICE_NAME = 'Card Dispute' and TEMPLATE_ID = '39' and ISACTIVE = 'Y'
 
 INSERT INTO WFMAILQUEUETABLE(mailFrom,mailTo,mailCC,mailBCC,mailSubject,mailMessage,mailContentType,attachmentISINDEX,attachmentNames,attachmentExts,mailPriority,mailStatus,statusComments,lockedBy,successTime,LastLockTime,insertedBy,mailActionType,insertedTime,processDefId,processInstanceId,workitemId,activityId,noOfTrials,zipFlag,zipName,maxZipSize,alternateMessage) values(''+@MAIL_FROM+'',''+@MAIL_TO+'',NULL,NULL,''+@MAIL_SUBJECT+'',''+@MAIL_TEMPLATE+'','text/html;charset=UTF-8',NULL,NULL,NULL,1,'N',NULL,NULL,NULL,NULL,'CUSTOM','TRIGGER',getdate(),@ProcessDefID,@ProcessInstanceID,@WorkItemID,@ActivityID,0,NULL,NULL,NULL,NULL) 
+
+
+	 INSERT INTO [dbo].[USR_0_CPF_TemplateTypeTemplateMapping]
+           ([ProcessName],[CommStage],[TemplateType],[TemplateId],[MailTemplate],
+            [FromMail],[DefaultCCMail],[IsActiveMail],[SMSEnglishTemplate],
+            [IsActiveEnglish],[SMSArabicTemplate],[isActiveSMSArabic],[MailPlaceHolders],
+            [mailSubject],[mailSubPlaceHolder],[Infobip_Alert_ID],[Infobip_Dynamic_Tags],[Infobip_SMS_isActive])
+     VALUES
+           ('SRB', 
+            '', 
+            'SLATemplate', 
+            '7',
+            '<!DOCTYPE html> <html> <head> <meta charset="UTF-8"> <meta name="color-scheme" content="light"> <meta name="supported-color-schemes" content="light"> </head> <body style="margin:0; padding:0; font-family:Verdana, Arial, sans-serif; background:#ffffff;"> <table width="100%" cellpadding="0" cellspacing="0" border="0" align="center"> <tr> <td align="center"> <table width="1000" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse; margin:20px auto;"> <tr> <td width="50%" style="padding:20px; padding-bottom:10px; font-size:13px; line-height:1.6; direction:ltr; text-align:left;"> <p>Hello Team,</p> <p>Subject <b>#processinstanceid#</b> is pending in <b>#activityname#</b> exceeding <b>#TAT_IN_DAYS#</b> working days.</p> <p>Kindly clear the same.</p> </td> </tr> </table> </td> </tr> </table> </body> </html>',
+            
+            'test5@rakbanktst.ae', '', 'Y', '', '', '', '', '', 
+            
+            'Subject – #processinstanceid# exceeding TAT #TAT_IN_DAYS# working days #activityname#', 
+            
+            '', '', '', '')
