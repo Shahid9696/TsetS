@@ -1,30 +1,3 @@
--- First, delete the old one if it exists to avoid duplicates
-DELETE FROM [dbo].[USR_0_CPF_TemplateTypeTemplateMapping] 
-WHERE ProcessName = 'SRB' AND TemplateId = '8';
-
--- Insert the updated template for tabular data
-INSERT INTO [dbo].[USR_0_CPF_TemplateTypeTemplateMapping]
-           ([ProcessName],[CommStage],[TemplateType],[TemplateId],[MailTemplate],
-            [FromMail],[DefaultCCMail],[IsActiveMail],[SMSEnglishTemplate],
-            [IsActiveEnglish],[SMSArabicTemplate],[isActiveSMSArabic],[MailPlaceHolders],
-            [mailSubject],[mailSubPlaceHolder],[Infobip_Alert_ID],[Infobip_Dynamic_Tags],[Infobip_SMS_isActive])
-     VALUES
-           ('SRB', 
-            '', 
-            'SLATemplate', 
-            '8',
-            '<!DOCTYPE html> <html> <head> <meta charset="UTF-8"> <meta name="color-scheme" content="light"> <meta name="supported-color-schemes" content="light"> </head> <body style="margin:0; padding:0; font-family:Verdana, Arial, sans-serif; background:#ffffff;"> <table width="100%" cellpadding="0" cellspacing="0" border="0" align="center"> <tr> <td align="center"> <table width="1000" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse; margin:20px auto;"> <tr> <td width="100%" style="padding:20px; padding-bottom:10px; font-size:13px; line-height:1.6; direction:ltr; text-align:left;"> <p>Hello Team,</p> <p>The following work items are pending in <b>#activityname#</b> and have exceeded their TAT. Please find the details below:</p> <table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse; width:100%; text-align:left; font-size:12px;"> <tr style="background-color:#f2f2f2;"> <th>Process Instance ID</th> <th>Entry Date</th> <th>TAT (Days)</th> <th>Working Days Elapsed</th> </tr> #HTML_TABLE_ROWS# </table> <p>Kindly clear the same.</p> </td> </tr> </table> </td> </tr> </table> </body> </html>',
-            
-            'test5@rakbanktst.ae', '', 'Y', '', '', '', '', '', 
-            
-            'Action Required: Multiple items exceeding TAT in #activityname#', 
-            
-            '', '', '', '')
-
-
-USE [rakcas]
-GO
-
 ALTER PROCEDURE [dbo].[NG_SRB_TAT_Escalation_Mail]
 AS
 BEGIN
@@ -126,12 +99,11 @@ BEGIN
         activityname,
         processname,
         ESCALATION_MAIL,
-        MAX(ProcessDefID) AS ProcessDefID, -- Grab one to satisfy the mail table constraint
+        MAX(ProcessDefID) AS ProcessDefID,
         MAX(processinstanceid) AS RefProcessInstanceId, 
         MAX(WorkItemID) AS RefWorkItemID,
         MAX(ActivityID) AS RefActivityID,
         HTML_TABLE_ROWS = (
-            -- This creates the dynamic <tr><td> rows for the HTML table
             SELECT 
                 td = i2.processinstanceid, '',
                 td = CONVERT(VARCHAR(19), i2.entryDATETIME, 120), '',
@@ -162,12 +134,24 @@ BEGIN
         NULL,
         NULL,
         
-        -- Replace Placeholder in the Subject
-        REPLACE(t.mailSubject, '#activityname#', g.activityname),
+        -- Replace Placeholder in the Subject with Display Names
+        REPLACE(t.mailSubject, '#activityname#', 
+            CASE g.activityname 
+                WHEN 'Q2' THEN 'OPS Maker'
+                WHEN 'Q4' THEN 'OPS Checker'
+                ELSE g.activityname 
+            END
+        ),
 
-        -- Replace Placeholders in the HTML Mail Body
+        -- Replace Placeholders in the HTML Mail Body with Display Names
         REPLACE(
-            REPLACE(t.MailTemplate, '#activityname#', g.activityname),
+            REPLACE(t.MailTemplate, '#activityname#', 
+                CASE g.activityname 
+                    WHEN 'Q2' THEN 'OPS Maker'
+                    WHEN 'Q4' THEN 'OPS Checker'
+                    ELSE g.activityname 
+                END
+            ),
             '#HTML_TABLE_ROWS#', ISNULL(g.HTML_TABLE_ROWS, '')
         ),
 
@@ -186,7 +170,6 @@ BEGIN
         0,       
         NULL, NULL, NULL, NULL
     FROM #GroupedMails g
-    -- Join template mapping table here
     INNER JOIN USR_0_CPF_TemplateTypeTemplateMapping t WITH(NOLOCK)
         ON t.ProcessName = g.processname
         AND t.TemplateId = '8';
