@@ -104,9 +104,9 @@ BEGIN
         MAX(WorkItemID) AS RefWorkItemID,
         MAX(ActivityID) AS RefActivityID,
         HTML_TABLE_ROWS = (
+            -- The entryDATETIME column has been removed below
             SELECT 
                 td = i2.processinstanceid, '',
-                td = CONVERT(VARCHAR(19), i2.entryDATETIME, 120), '',
                 td = ISNULL(i2.TAT_IN_DAYS, ''), '',
                 td = CAST(i2.WorkingDaysElapsed AS VARCHAR)
             FROM #BreachingItems i2
@@ -179,3 +179,27 @@ BEGIN
     DROP TABLE #GroupedMails;
 END;
 GO
+
+
+-- First, delete the old one if it exists
+DELETE FROM [dbo].[USR_0_CPF_TemplateTypeTemplateMapping] 
+WHERE ProcessName = 'SRB' AND TemplateId = '8';
+
+-- Insert the updated template with 3 table columns
+INSERT INTO [dbo].[USR_0_CPF_TemplateTypeTemplateMapping]
+           ([ProcessName],[CommStage],[TemplateType],[TemplateId],[MailTemplate],
+            [FromMail],[DefaultCCMail],[IsActiveMail],[SMSEnglishTemplate],
+            [IsActiveEnglish],[SMSArabicTemplate],[isActiveSMSArabic],[MailPlaceHolders],
+            [mailSubject],[mailSubPlaceHolder],[Infobip_Alert_ID],[Infobip_Dynamic_Tags],[Infobip_SMS_isActive])
+     VALUES
+           ('SRB', 
+            '', 
+            'SLATemplate', 
+            '8',
+            '<!DOCTYPE html> <html> <head> <meta charset="UTF-8"> <meta name="color-scheme" content="light"> <meta name="supported-color-schemes" content="light"> </head> <body style="margin:0; padding:0; font-family:Verdana, Arial, sans-serif; background:#ffffff;"> <table width="100%" cellpadding="0" cellspacing="0" border="0" align="center"> <tr> <td align="center"> <table width="1000" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse; margin:20px auto;"> <tr> <td width="100%" style="padding:20px; padding-bottom:10px; font-size:13px; line-height:1.6; direction:ltr; text-align:left;"> <p>Hello Team,</p> <p>The following work items are pending in <b>#activityname#</b> and have exceeded their TAT. Please find the details below:</p> <table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse; width:100%; text-align:left; font-size:12px;"> <tr style="background-color:#f2f2f2;"> <th>Process Instance ID</th> <th>TAT (Days)</th> <th>Working Days Elapsed</th> </tr> #HTML_TABLE_ROWS# </table> <p>Kindly clear the same.</p> </td> </tr> </table> </td> </tr> </table> </body> </html>',
+            
+            'test5@rakbanktst.ae', '', 'Y', '', '', '', '', '', 
+            
+            'Action Required: Multiple items exceeding TAT in #activityname#', 
+            
+            '', '', '', '')
