@@ -1,13 +1,34 @@
-CREATE dbo.usp_SRB_TAT_Escalation_Mail
+USE [rakcas]
+GO
+
+ALTER PROCEDURE [dbo].[NG_SRB_TAT_Escalation_Mail]
 AS
 BEGIN
     SET NOCOUNT ON;
     SET DATEFIRST 7;  -- Sunday = 1, Saturday = 7
-
+ 
     DECLARE 
         @MAIL_FROM NVARCHAR(200) = 'test5@rakbanktst.ae',
         @Today DATE = CAST(GETDATE() AS DATE);
-
+ 
+    -- 1. Create a Temp Table
+    IF OBJECT_ID('tempdb..#TempWorkingDays') IS NOT NULL 
+        DROP TABLE #TempWorkingDays;
+ 
+    CREATE TABLE #TempWorkingDays (
+        processinstanceid NVARCHAR(100),
+        processname NVARCHAR(100),
+        activityname NVARCHAR(100),
+        entryDATETIME DATETIME,
+        ProcessDefID NVARCHAR(100),  
+        WorkItemID NVARCHAR(100),    
+        ActivityID NVARCHAR(100),    
+        TAT_IN_DAYS NVARCHAR(50), 
+        ESCALATION_MAIL NVARCHAR(MAX),
+        WorkingDaysElapsed INT
+    );
+ 
+    -- 2. CTE to isolate items and calculate recursive working days
     ;WITH BaseData AS
     (
         SELECT
@@ -15,13 +36,11 @@ BEGIN
             q.processname,
             q.activityname,
             q.entryDATETIME,
-            q.processdefid   AS ProcessDefID,
-            q.workitemid     AS WorkItemID,
-            q.activityid     AS ActivityID,
+            q.processdefid    AS ProcessDefID,
+            q.workitemid      AS WorkItemID,
+            q.activityid      AS ActivityID,
             m.TAT_IN_DAYS,
             m.ESCALATION_MAIL,
-
-            -- Shift weekend entry to Monday
             CASE 
                 WHEN DATEPART(WEEKDAY, q.entryDATETIME) = 7 
                     THEN DATEADD(DAY, 2, CAST(q.entryDATETIME AS DATE))
@@ -29,12 +48,15 @@ BEGIN
                     THEN DATEADD(DAY, 1, CAST(q.entryDATETIME AS DATE))
                 ELSE CAST(q.entryDATETIME AS DATE)
             END AS SLA_StartDate
-        FROM QUEUEVIEW q
-        INNER JOIN USR_0_SRB_SLA_TAT_MASTER m
+        FROM QUEUEVIEW q WITH(NOLOCK)
+        INNER JOIN USR_0_SRB_SLA_TAT_MASTER m WITH(NOLOCK)
             ON m.WORKSTEP_NAME = q.activityname
+        INNER JOIN RB_SRB_EXTTABLE e WITH(NOLOCK)
+            ON e.WI_NAME = q.processinstanceid
         WHERE q.processname = 'SRB'
-          AND m.ESCALATION_MAIL IS NOT NULL
-          AND m.ESCALATION_MAIL <> ''
+          AND e.isRoutingForEFT = 'Y'
+          AND q.activityname IN ('Ops_Monitor','Q2','Q4')
+          AND ISNULL(m.ESCALATION_MAIL, '') <> ''
     ),
     DateSeries AS
     (
@@ -42,9 +64,7 @@ BEGIN
             b.*,
             b.SLA_StartDate AS WorkDate
         FROM BaseData b
-
         UNION ALL
-
         SELECT
             d.processinstanceid,
             d.processname,
@@ -59,110 +79,83 @@ BEGIN
             DATEADD(DAY, 1, d.WorkDate)
         FROM DateSeries d
         WHERE DATEADD(DAY, 1, d.WorkDate) <= @Today
-    ),
-    WorkingDays AS
-    (
-        SELECT
-            processinstanceid,
-            processname,
-            activityname,
-            entryDATETIME,
-            ProcessDefID,
-            WorkItemID,
-            ActivityID,
-            TAT_IN_DAYS,
-            ESCALATION_MAIL,
-            COUNT(*) AS WorkingDaysElapsed
-        FROM DateSeries
-        WHERE DATEPART(WEEKDAY, WorkDate) NOT IN (1,7)
-        GROUP BY
-            processinstanceid,
-            processname,
-            activityname,
-            entryDATETIME,
-            ProcessDefID,
-            WorkItemID,
-            ActivityID,
-            TAT_IN_DAYS,
-            ESCALATION_MAIL
     )
-
+    INSERT INTO #TempWorkingDays
+    SELECT
+        processinstanceid,
+        processname,
+        activityname,
+        entryDATETIME,
+        ProcessDefID,
+        WorkItemID,
+        ActivityID,
+        TAT_IN_DAYS,
+        ESCALATION_MAIL,
+        COUNT(*) AS WorkingDaysElapsed
+    FROM DateSeries
+    WHERE DATEPART(WEEKDAY, WorkDate) NOT IN (1,7) 
+    GROUP BY
+        processinstanceid, processname, activityname, entryDATETIME,
+        ProcessDefID, WorkItemID, ActivityID, TAT_IN_DAYS, ESCALATION_MAIL
+    OPTION (MAXRECURSION 0);
+ 
+    -- 3. Final INSERT joining the Template Table
     INSERT INTO WFMAILQUEUETABLE
     (
-        mailFrom,
-        mailTo,
-        mailCC,
-        mailBCC,
-        mailSubject,
-        mailMessage,
-        mailContentType,
-        attachmentISINDEX,
-        attachmentNames,
-        attachmentExts,
-        mailPriority,
-        mailStatus,
-        statusComments,
-        lockedBy,
-        successTime,
-        LastLockTime,
-        insertedBy,
-        mailActionType,
-        insertedTime,
-        processDefId,
-        processInstanceId,
-        workitemId,
-        activityId,
-        noOfTrials,
-        zipFlag,
-        zipName,
-        maxZipSize,
-        alternateMessage
+         mailFrom, mailTo, mailCC, mailBCC, mailSubject, mailMessage,
+         mailContentType, attachmentISINDEX, attachmentNames, attachmentExts,
+         mailPriority, mailStatus, statusComments, lockedBy, successTime,
+         LastLockTime, insertedBy, mailActionType, insertedTime,
+         processDefId, processInstanceId, workitemId, activityId,
+         noOfTrials, zipFlag, zipName, maxZipSize, alternateMessage
     )
     SELECT
-        @MAIL_FROM,
+        ISNULL(NULLIF(t.FromMail, ''), @MAIL_FROM), 
         w.ESCALATION_MAIL,
         NULL,
         NULL,
+        
+       -- Replace Placeholders in the Subject
+    REPLACE(
+        REPLACE(
+            REPLACE(t.mailSubject, '#processinstanceid#', w.processinstanceid),
+            '#activityname#', w.activityname
+        ),
+        '#TAT_IN_DAYS#', ISNULL(w.TAT_IN_DAYS, '')
+    ),
 
-        -- Subject
-        CAST(w.processinstanceid AS NVARCHAR(50))
-        + ' exceeding TAT ' 
-        + CAST(w.TAT_IN_DAYS AS NVARCHAR(10))
-        + ' working days '
-        + w.activityname,
-
-        -- HTML Body
-        '<html><body>'
-        + '<p>Subject <b>' + CAST(w.processinstanceid AS NVARCHAR(50)) + '</b> '
-        + 'is pending in <b>' + w.activityname + '</b> '
-        + 'exceeding <b>' + CAST(w.TAT_IN_DAYS AS NVARCHAR(10)) + '</b> working days.'
-        + '</p><p>Kindly clear the same.</p>'
-        + '</body></html>',
+    -- Replace Placeholders in the HTML Mail Body
+    REPLACE(
+        REPLACE(
+            REPLACE(t.MailTemplate, '#processinstanceid#', w.processinstanceid),
+            '#activityname#', w.activityname
+        ),
+        '#TAT_IN_DAYS#', ISNULL(w.TAT_IN_DAYS, '')
+    ),
 
         'text/html;charset=UTF-8',
-        NULL,
-        NULL,
-        NULL,
-        1,
-        'N',
-        NULL,
-        NULL,
-        NULL,
-        NULL,
-        'CUSTOM',
-        'TRIGGER',
+        NULL, NULL, NULL, 
+        1,       
+        'N',     
+        NULL, NULL, NULL, NULL,
+        'CUSTOM', 
+        'TRIGGER', 
         GETDATE(),
-        w.ProcessDefID,
-        w.processinstanceid,
-        w.WorkItemID,
+        w.ProcessDefID, 
+        w.processinstanceid, 
+        w.WorkItemID, 
         w.ActivityID,
-        0,
-        NULL,
-        NULL,
-        NULL,
-        NULL
-    FROM WorkingDays w
-    WHERE w.WorkingDaysElapsed > CAST(w.TAT_IN_DAYS AS INT)
-    OPTION (MAXRECURSION 0);
+        0,       
+        NULL, NULL, NULL, NULL
+    FROM #TempWorkingDays w
+    -- Join template mapping table here
+    INNER JOIN USR_0_CPF_TemplateTypeTemplateMapping t WITH(NOLOCK)
+        ON t.ProcessName = w.processname
+        AND t.TemplateId = '8' 
+        -- If you need to check IsActiveMail, add it here: AND t.IsActiveMail = 'Y'
+    WHERE w.WorkingDaysElapsed >= TRY_CAST(w.TAT_IN_DAYS AS INT);
+ 
+    -- 4. Cleanup
+    DROP TABLE #TempWorkingDays;
 END;
 GO
