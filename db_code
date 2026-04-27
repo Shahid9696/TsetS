@@ -201,3 +201,30 @@ BEGIN
     DROP TABLE #BreachingItems;
     DROP TABLE #GroupedMails;
 END;
+
+
+
+
+
+ALTER PROCEDURE [dbo].[NG_SRB_TAT_Escalation_Mail]
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET DATEFIRST 7;  -- Sunday = 1, Saturday = 7
+ 
+    DECLARE 
+        @MAIL_FROM NVARCHAR(200) = 'test5@rakbanktst.ae',
+        @Today DATE = CAST(GETDATE() AS DATE);
+
+    -- NEW CHANGE: Check if today is a weekend. 
+    -- If it is Sunday (1) or Saturday (7), exit the procedure immediately.
+    IF DATEPART(WEEKDAY, @Today) IN (1, 7)
+    BEGIN
+        RETURN; 
+    END
+ 
+    -- 1. Create a Temp Table (The rest of your procedure continues normally from here)
+    IF OBJECT_ID('tempdb..#TempWorkingDays') IS NOT NULL 
+        DROP TABLE #TempWorkingDays;
+        
+    -- ... [Rest of your code, including the CTEs and final Insert] ...
