@@ -1,45 +1,203 @@
-INSERT INTO [dbo].[USR_0_CPF_TemplateTypeTemplateMapping]
-           ([ProcessName],[CommStage],[TemplateType],[TemplateId],[MailTemplate],[FromMail],[DefaultCCMail],[IsActiveMail],[SMSEnglishTemplate],[IsActiveEnglish],[SMSArabicTemplate],[isActiveSMSArabic],[MailPlaceHolders],[mailSubject],[mailSubPlaceHolder],[Infobip_Alert_ID],[Infobip_Dynamic_Tags],[Infobip_SMS_isActive])
-     VALUES
-           ('SRB','','SLATemplate','7',<MailTemplate, nvarchar(max),>,'test5@rakbanktst.ae','','Y','','','','','',<mailSubject, nvarchar(1000),>,'','','','')
+USE [rakcas]
+GO
+/****** Object:  StoredProcedure [dbo].[NG_SRB_TAT_Escalation_Mail]    Script Date: 4/27/2026 9:52:19 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [dbo].[NG_SRB_TAT_Escalation_Mail]
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET DATEFIRST 7;  -- Sunday = 1, Saturday = 7
+ 
+    DECLARE 
+        @MAIL_FROM NVARCHAR(200) = 'test5@rakbanktst.ae',
+        @Today DATE = CAST(GETDATE() AS DATE);
+ 
+    -- 1. Create a Temp Table for breaching items
+    IF OBJECT_ID('tempdb..#BreachingItems') IS NOT NULL 
+        DROP TABLE #BreachingItems;
+ 
+    CREATE TABLE #BreachingItems (
+        processinstanceid NVARCHAR(100),
+        processname NVARCHAR(100),
+        activityname NVARCHAR(100),
+        entryDATETIME DATETIME,
+        ProcessDefID NVARCHAR(100),  
+        WorkItemID NVARCHAR(100),    
+        ActivityID NVARCHAR(100),    
+        TAT_IN_DAYS NVARCHAR(50), 
+        ESCALATION_MAIL NVARCHAR(MAX),
+        WorkingDaysElapsed INT
+    );
 
+    -- 2. CTE to isolate items and calculate recursive working days
+    ;WITH BaseData AS
+    (
+        SELECT
+            q.processinstanceid,
+            q.processname,
+            q.activityname,
+            q.entryDATETIME,
+            q.processdefid    AS ProcessDefID,
+            q.workitemid      AS WorkItemID,
+            q.activityid      AS ActivityID,
+            m.TAT_IN_DAYS,
+            m.ESCALATION_MAIL,
+            -- 2nd: Apply weekend logic to the EffectiveDate
+            CASE 
+                WHEN DATEPART(WEEKDAY, ed.EffectiveDate) = 7 -- If EffectiveDate is Saturday
+                    THEN DATEADD(DAY, 2, ed.EffectiveDate)   -- Push to Monday
+                WHEN DATEPART(WEEKDAY, ed.EffectiveDate) = 1 -- If EffectiveDate is Sunday
+                    THEN DATEADD(DAY, 1, ed.EffectiveDate)   -- Push to Monday
+                ELSE ed.EffectiveDate
+            END AS SLA_StartDate
+        FROM QUEUEVIEW q WITH(NOLOCK)
+        INNER JOIN USR_0_SRB_SLA_TAT_MASTER m WITH(NOLOCK)
+            ON m.WORKSTEP_NAME = q.activityname
+        INNER JOIN RB_SRB_EXTTABLE e WITH(NOLOCK)
+            ON e.WI_NAME = q.processinstanceid
+        -- 1st: Calculate Effective Date (Shift by 1 day if time is 16:00 or later)
+        CROSS APPLY (
+            SELECT CASE 
+                WHEN DATEPART(HOUR, q.entryDATETIME) >= 16 
+                THEN DATEADD(DAY, 1, CAST(q.entryDATETIME AS DATE))
+                ELSE CAST(q.entryDATETIME AS DATE)
+            END AS EffectiveDate
+        ) ed
+ 
+        WHERE q.processname = 'SRB'
+          AND e.isRoutingForEFT = 'Y'
+          AND q.activityname IN ('Ops_Monitor','Q2','Q4')
+          AND ISNULL(m.ESCALATION_MAIL, '') <> ''
+    ),
+    DateSeries AS
+    (
+        SELECT
+            b.*,
+            b.SLA_StartDate AS WorkDate
+        FROM BaseData b
+        UNION ALL
+        SELECT
+            d.processinstanceid,
+            d.processname,
+            d.activityname,
+            d.entryDATETIME,
+            d.ProcessDefID,
+            d.WorkItemID,
+            d.ActivityID,
+            d.TAT_IN_DAYS,
+            d.ESCALATION_MAIL,
+            d.SLA_StartDate,
+            DATEADD(DAY, 1, d.WorkDate)
+        FROM DateSeries d
+        WHERE DATEADD(DAY, 1, d.WorkDate) <= @Today
+    )
+    -- Insert ONLY the items that have actually breached their TAT
+    INSERT INTO #BreachingItems
+    SELECT
+        processinstanceid, processname, activityname, entryDATETIME,
+        ProcessDefID, WorkItemID, ActivityID, TAT_IN_DAYS, ESCALATION_MAIL,
+        COUNT(*) AS WorkingDaysElapsed
+    FROM DateSeries ds
+    WHERE DATEPART(WEEKDAY, WorkDate) NOT IN (1,7) 
+	AND NOT EXISTS (
+        SELECT 1
+        FROM USR_0_CPF_Holiday_Master h WITH (NOLOCK)
+        WHERE CAST(h.HolidayDate AS DATE) = CAST(ds.WorkDate AS DATE)
+	)GROUP BY
+        processinstanceid, processname, activityname, entryDATETIME,
+        ProcessDefID, WorkItemID, ActivityID, TAT_IN_DAYS, ESCALATION_MAIL
+    HAVING COUNT(*) > TRY_CAST(MAX(TAT_IN_DAYS) AS INT)
+    OPTION (MAXRECURSION 0);
+ 
+    -- 3. Group the breaching items by ActivityName and build HTML rows
+    IF OBJECT_ID('tempdb..#GroupedMails') IS NOT NULL 
+        DROP TABLE #GroupedMails;
 
-Subject – <WORKITEM NUMBER> exceeding TAT 3 working days <QUEUE NAME>
+    SELECT 
+        activityname,
+        processname,
+        ESCALATION_MAIL,
+        MAX(ProcessDefID) AS ProcessDefID,
+        MAX(processinstanceid) AS RefProcessInstanceId, 
+        MAX(WorkItemID) AS RefWorkItemID,
+        MAX(ActivityID) AS RefActivityID,
+        HTML_TABLE_ROWS = (
+            -- The entryDATETIME column has been removed below
+            SELECT 
+                td = i2.processinstanceid, '',
+                td = ISNULL(i2.TAT_IN_DAYS, ''), '',
+                td = CAST(i2.WorkingDaysElapsed AS VARCHAR)
+            FROM #BreachingItems i2
+            WHERE i2.activityname = i1.activityname 
+              AND i2.ESCALATION_MAIL = i1.ESCALATION_MAIL
+            FOR XML PATH('tr')
+        )
+    INTO #GroupedMails
+    FROM #BreachingItems i1
+    GROUP BY activityname, processname, ESCALATION_MAIL;
 
-Email Body - Subject <WORKITEM NUMBER> is pending in <Queue Name> exceeding 3 working days. Kindly clear the same.
+    -- 4. Final INSERT joining the Template Table
+    INSERT INTO WFMAILQUEUETABLE
+    (
+         mailFrom, mailTo, mailCC, mailBCC, mailSubject, mailMessage,
+         mailContentType, attachmentISINDEX, attachmentNames, attachmentExts,
+         mailPriority, mailStatus, statusComments, lockedBy, successTime,
+         LastLockTime, insertedBy, mailActionType, insertedTime,
+         processDefId, processInstanceId, workitemId, activityId,
+         noOfTrials, zipFlag, zipName, maxZipSize, alternateMessage
+    )
+    SELECT
+        ISNULL(NULLIF(t.FromMail, ''), @MAIL_FROM), 
+        g.ESCALATION_MAIL,
+        NULL,
+        NULL,
+        
+        -- Replace Placeholder in the Subject with Display Names
+        REPLACE(t.mailSubject, '#activityname#', 
+            CASE g.activityname 
+                WHEN 'Q2' THEN 'OPS Maker'
+                WHEN 'Q4' THEN 'OPS Checker'
+				WHEN 'Ops_Monitor' THEN 'OPS Monitor'
+                ELSE g.activityname 
+            END
+        ),
 
+        -- Replace Placeholders in the HTML Mail Body with Display Names
+        REPLACE(
+            REPLACE(t.MailTemplate, '#activityname#', 
+                CASE g.activityname 
+                    WHEN 'Q2' THEN 'OPS Maker'
+                    WHEN 'Q4' THEN 'OPS Checker'
+					WHEN 'Ops_Monitor' THEN 'OPS Monitor'
+                    ELSE g.activityname 
+                END
+            ),
+            '#HTML_TABLE_ROWS#', ISNULL(g.HTML_TABLE_ROWS, '')
+        ),
 
-<!DOCTYPE html>  <html>  <head>  <meta charset="UTF-8">  <meta name="color-scheme" content="light">  <meta name="supported-color-schemes" content="light">  </head>    <body style="margin:0; padding:0; font-family:Verdana, Arial, sans-serif; background:#ffffff;">    <table width="100%" cellpadding="0" cellspacing="0" border="0" align="center">      <tr>          <td align="center">                <!-- Main container -->              <table width="1000" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse; margin:20px auto;">                    <tr>                      <!-- English (Left) -->                      <td width="50%" style="padding:20px; padding-bottom:10px; font-size:13px; line-height:1.6; direction:ltr; text-align:left;">                            <p>Hello $Cust_Name$,</p>                            <p>Thank you for your request $URN$ for $Subcat_Name$, submitted on $Sub_Date$. Unfortunately, we’re unable to approve it as it does not meet the Bank’s risk policy and eligibility criteria.</p>                                                                                                                                                               </td>                        <!-- Arabic (Right) -->                                      </tr>                    <!-- Disclaimer Row -->                                </table>            </td>      </tr>  </table>    </body>  </html>  
-
-
-  Select @MAIL_FROM = FROM_MAILID,@MAIL_SUBJECT = MAIL_SUBJECT,@MAIL_TEMPLATE = REPLACE((REPLACE(MAIL_TEMPLATE,'$WI_NAME$',''+@WINAME+'')),'$UPDATE_DATE$',@entryDATETIME+5),@SMS_TEMPLATE = REPLACE(SMS_TEMPLATE,'$WI_NAME$',''+@WINAME+''),@MAIL_PLACEHOLDER = MAIL_PLACEHOLDER,
-              @Infobip_SMS_isActive = Infobip_SMS_isActive,@infobip_Alert_id = Infobip_Alert_ID,@Infobip_Dynamic_Tags = Infobip_Dynamic_Tags from NG_TS_TEMPLATE_MAPPING_MASTER WITH(NOLOCK) where SERVICE_NAME = 'Card Dispute' and TEMPLATE_ID = '39' and ISACTIVE = 'Y'
-
-INSERT INTO WFMAILQUEUETABLE(mailFrom,mailTo,mailCC,mailBCC,mailSubject,mailMessage,mailContentType,attachmentISINDEX,attachmentNames,attachmentExts,mailPriority,mailStatus,statusComments,lockedBy,successTime,LastLockTime,insertedBy,mailActionType,insertedTime,processDefId,processInstanceId,workitemId,activityId,noOfTrials,zipFlag,zipName,maxZipSize,alternateMessage) values(''+@MAIL_FROM+'',''+@MAIL_TO+'',NULL,NULL,''+@MAIL_SUBJECT+'',''+@MAIL_TEMPLATE+'','text/html;charset=UTF-8',NULL,NULL,NULL,1,'N',NULL,NULL,NULL,NULL,'CUSTOM','TRIGGER',getdate(),@ProcessDefID,@ProcessInstanceID,@WorkItemID,@ActivityID,0,NULL,NULL,NULL,NULL) 
-
-
-	 INSERT INTO [dbo].[USR_0_CPF_TemplateTypeTemplateMapping]
-           ([ProcessName],[CommStage],[TemplateType],[TemplateId],[MailTemplate],
-            [FromMail],[DefaultCCMail],[IsActiveMail],[SMSEnglishTemplate],
-            [IsActiveEnglish],[SMSArabicTemplate],[isActiveSMSArabic],[MailPlaceHolders],
-            [mailSubject],[mailSubPlaceHolder],[Infobip_Alert_ID],[Infobip_Dynamic_Tags],[Infobip_SMS_isActive])
-     VALUES
-           ('SRB', 
-            '', 
-            'SLATemplate', 
-            '7',
-            '<!DOCTYPE html> <html> <head> <meta charset="UTF-8"> <meta name="color-scheme" content="light"> <meta name="supported-color-schemes" content="light"> </head> <body style="margin:0; padding:0; font-family:Verdana, Arial, sans-serif; background:#ffffff;"> <table width="100%" cellpadding="0" cellspacing="0" border="0" align="center"> <tr> <td align="center"> <table width="1000" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse; margin:20px auto;"> <tr> <td width="50%" style="padding:20px; padding-bottom:10px; font-size:13px; line-height:1.6; direction:ltr; text-align:left;"> <p>Hello Team,</p> <p>Subject <b>#processinstanceid#</b> is pending in <b>#activityname#</b> exceeding <b>#TAT_IN_DAYS#</b> working days.</p> <p>Kindly clear the same.</p> </td> </tr> </table> </td> </tr> </table> </body> </html>',
-            
-            'test5@rakbanktst.ae', '', 'Y', '', '', '', '', '', 
-            
-            'Subject – #processinstanceid# exceeding TAT #TAT_IN_DAYS# working days #activityname#', 
-            
-            '', '', '', '')
-
-
-
-
-SRB-00001002096-Process	SRB	Ops_Monitor	2026-04-09 10:09:55.160	35	1	90	3	test5@rakbanktst.ae,test11@rakbanktst.ae	2026-04-09
-SRB-00001002102-Process	SRB	Ops_Monitor	2026-04-09 12:11:46.760	35	1	90	3	test5@rakbanktst.ae,test11@rakbanktst.ae	2026-04-09
-SRB-00001001880-Process	SRB	Q2	2026-03-30 10:31:58.747	35	1	11	3	test5@rakbanktst.ae,test11@rakbanktst.ae	2026-03-30
-SRB-00001001904-Process	SRB	Q2	2026-03-31 08:56:32.110	35	1	11	3	test5@rakbanktst.ae,test11@rakbanktst.ae	2026-03-31
+        'text/html;charset=UTF-8',
+        NULL, NULL, NULL, 
+        1,       
+        'N',     
+        NULL, NULL, NULL, NULL,
+        'CUSTOM', 
+        'TRIGGER', 
+        GETDATE(),
+        g.ProcessDefID, 
+        g.RefProcessInstanceId, 
+        g.RefWorkItemID, 
+        g.RefActivityID,
+        0,       
+        NULL, NULL, NULL, NULL
+    FROM #GroupedMails g
+    INNER JOIN USR_0_CPF_TemplateTypeTemplateMapping t WITH(NOLOCK)
+        ON t.ProcessName = g.processname
+        AND t.TemplateId = '8';
+ 
+    -- 5. Cleanup
+    DROP TABLE #BreachingItems;
+    DROP TABLE #GroupedMails;
+END;
