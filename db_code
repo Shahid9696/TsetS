@@ -228,3 +228,15 @@ BEGIN
         DROP TABLE #TempWorkingDays;
         
     -- ... [Rest of your code, including the CTEs and final Insert] ...
+
+-- NEW CHANGE: Check if today is a weekend OR a holiday. 
+    -- If it is Sunday (1), Saturday (7), or a holiday, exit immediately.
+    IF DATEPART(WEEKDAY, @Today) IN (1, 7)
+       OR EXISTS (
+           SELECT 1 
+           FROM USR_0_CPF_Holiday_Master WITH (NOLOCK) 
+           WHERE CAST(HolidayDate AS DATE) = @Today
+       )
+    BEGIN
+        RETURN; 
+    END
